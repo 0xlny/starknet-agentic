@@ -13,7 +13,12 @@
  * - starknet_invoke_contract: Write to contracts
  * - starknet_swap: Execute swaps via avnu
  * - starknet_get_quote: Get swap quotes
- * - starknet_register_agent: Register agent identity (ERC-8004)
+ * - starknet_get_staking_info: Get staking pool and user position info
+ * - starknet_stake: Stake tokens to earn rewards
+ * - starknet_claim_staking_rewards: Claim or restake earned rewards
+ * - starknet_initiate_unstake: Start the unstaking process (begins cooldown)
+ * - starknet_complete_unstake: Claim tokens after cooldown period
+ * - starknet_get_unbonding_status: Check unstaking cooldown status
  *
  * Usage:
  *   STARKNET_RPC_URL=... STARKNET_ACCOUNT_ADDRESS=... STARKNET_PRIVATE_KEY=... node dist/index.js
@@ -39,9 +44,17 @@ import {
 import {
   getQuotes,
   executeSwap,
+  getAvnuStakingInfo,
+  getUserStakingInfo,
+  stakeToCalls,
+  initiateUnstakeToCalls,
+  unstakeToCalls,
+  claimRewardsToCalls,
   type Quote,
   type QuoteRequest,
   type Route,
+  type StakingInfo,
+  type UserStakingInfo,
 } from "@avnu/avnu-sdk";
 import { z } from "zod";
 
@@ -69,6 +82,27 @@ const TOKENS = {
   USDC: "0x053c91253bc9682c04929ca02ed00b3e423f6710d2ee7e0d5ebb06f3ecf368a8",
   USDT: "0x068f5c6a61780768455de69077e07e89787839bf8166decfbf92b645209c0fb8",
 };
+
+// Stakeable tokens with unbonding periods
+const STAKEABLE_TOKENS: Record<string, { address: string; unbondingDays: number }> = {
+  STRK: { address: TOKENS.STRK, unbondingDays: 21 },
+  WBTC: { address: "0x03fe2b97c1fd336e750087d68b9b867997fd64a2661ff3ca5a7c771641e8e7ac", unbondingDays: 7 },
+  TBTC: { address: "0x05958238523c56709bff7a99567939bbba64718daa527571789f1ee5e66c7f85", unbondingDays: 7 },
+  SOLVBTC: { address: "0x0153b21b6b1d1b36d5b43c6bcffabb0c22e8d17e1a61f79d4e9aa6b1a03c7e8d", unbondingDays: 7 },
+  LBTC: { address: "0x025fcc7ed5e0a5d5f0b4c3c2a9da34c6a5cca2a0b1b5e4b3c2a1d0e9f8c7b6a5", unbondingDays: 7 },
+};
+
+// Get unbonding period in days for a token address
+function getUnbondingDays(tokenAddress: string): number {
+  const normalizedAddress = tokenAddress.toLowerCase();
+  for (const [, info] of Object.entries(STAKEABLE_TOKENS)) {
+    if (info.address.toLowerCase() === normalizedAddress) {
+      return info.unbondingDays;
+    }
+  }
+  // Default to STRK unbonding period if unknown
+  return 21;
+}
 
 // ERC20 ABI (minimal)
 const ERC20_ABI = [
@@ -287,6 +321,112 @@ const tools: Tool[] = [
         },
       },
       required: ["contractAddress", "entrypoint"],
+    },
+  },
+  {
+    name: "starknet_get_staking_info",
+    description:
+      "Get staking pool information (APY, total staked) and user's staking position. Supports STRK and BTC variants (WBTC, tBTC, SolvBTC, LBTC).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        token: {
+          type: "string",
+          description: "Token to check staking info for (STRK, WBTC, etc.). Defaults to STRK.",
+        },
+        userAddress: {
+          type: "string",
+          description: "Address to check position for (defaults to agent's address)",
+        },
+      },
+    },
+  },
+  {
+    name: "starknet_stake",
+    description:
+      "Stake tokens to earn rewards via AVNU staking. Supports STRK and BTC variants. Tokens start earning rewards immediately.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        token: {
+          type: "string",
+          description: "Token to stake (STRK, WBTC, tBTC, SolvBTC, LBTC)",
+        },
+        amount: {
+          type: "string",
+          description: "Amount to stake in human-readable format (e.g., '100' for 100 tokens)",
+        },
+      },
+      required: ["token", "amount"],
+    },
+  },
+  {
+    name: "starknet_claim_staking_rewards",
+    description:
+      "Claim accumulated staking rewards. Can either withdraw to wallet or restake (compound) for higher returns.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        token: {
+          type: "string",
+          description: "Token to claim rewards for. Defaults to STRK.",
+        },
+        restake: {
+          type: "boolean",
+          description: "If true, rewards are restaked (compounded). If false, withdrawn to wallet. Defaults to false.",
+        },
+      },
+    },
+  },
+  {
+    name: "starknet_initiate_unstake",
+    description:
+      "Start the unstaking process. This begins the cooldown period (21 days for STRK, 7 days for BTC variants). Tokens stop earning rewards during cooldown. Only one unstake can be active at a time.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        token: {
+          type: "string",
+          description: "Token to unstake (STRK, WBTC, tBTC, SolvBTC, LBTC)",
+        },
+        amount: {
+          type: "string",
+          description: "Amount to unstake in human-readable format",
+        },
+      },
+      required: ["token", "amount"],
+    },
+  },
+  {
+    name: "starknet_complete_unstake",
+    description:
+      "Complete the unstaking process and claim tokens after the cooldown period. Use starknet_get_unbonding_status to check if cooldown is complete.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        token: {
+          type: "string",
+          description: "Token to complete unstaking for. Defaults to STRK.",
+        },
+      },
+    },
+  },
+  {
+    name: "starknet_get_unbonding_status",
+    description:
+      "Check the status of an active unstaking request. Returns whether in cooldown, ready to claim, or no active unstake.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        token: {
+          type: "string",
+          description: "Token to check unbonding status for. Defaults to STRK.",
+        },
+        userAddress: {
+          type: "string",
+          description: "Address to check (defaults to agent's address)",
+        },
+      },
     },
   },
 ];
@@ -635,6 +775,401 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
 
+      case "starknet_get_staking_info": {
+        const { token = "STRK", userAddress = env.STARKNET_ACCOUNT_ADDRESS } = args as {
+          token?: string;
+          userAddress?: string;
+        };
+
+        const tokenAddress = resolveTokenAddress(token);
+
+        // Get pool info from AVNU
+        const stakingInfo: StakingInfo = await getAvnuStakingInfo({ baseUrl: env.AVNU_BASE_URL });
+
+        // Find the pool for this token
+        const pool = stakingInfo.delegationPools.find(
+          (p) => p.tokenAddress.toLowerCase() === tokenAddress.toLowerCase()
+        );
+
+        if (!pool) {
+          throw new Error(`No staking pool found for token ${token}`);
+        }
+
+        // Get user's staking position
+        const userInfo: UserStakingInfo = await getUserStakingInfo(
+          tokenAddress,
+          userAddress,
+          { baseUrl: env.AVNU_BASE_URL }
+        );
+
+        // Get token decimals for formatting
+        const contract = new Contract({ abi: ERC20_ABI, address: tokenAddress, providerOrAccount: provider });
+        const decimals = await contract.decimals();
+        const decimalsNum = Number(decimals);
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                pool: {
+                  tokenAddress: pool.tokenAddress,
+                  poolAddress: pool.poolAddress,
+                  apr: `${(pool.apr * 100).toFixed(2)}%`,
+                  totalStaked: formatAmount(pool.stakedAmount, decimalsNum),
+                  totalStakedUsd: pool.stakedAmountInUsd?.toFixed(2),
+                },
+                user: {
+                  address: userAddress,
+                  stakedAmount: formatAmount(userInfo.amount, decimalsNum),
+                  stakedAmountUsd: userInfo.amountInUsd?.toFixed(2),
+                  unclaimedRewards: formatAmount(userInfo.unclaimedRewards, decimalsNum),
+                  unclaimedRewardsUsd: userInfo.unclaimedRewardsInUsd?.toFixed(2),
+                  expectedYearlyRewards: formatAmount(userInfo.expectedYearlyStrkRewards, decimalsNum),
+                },
+                token,
+                unbondingPeriodDays: getUnbondingDays(tokenAddress),
+              }, null, 2),
+            },
+          ],
+        };
+      }
+
+      case "starknet_stake": {
+        const { token, amount } = args as {
+          token: string;
+          amount: string;
+        };
+
+        const tokenAddress = resolveTokenAddress(token);
+        const amountWei = await parseAmount(amount, tokenAddress);
+
+        // Get pool info to find pool address
+        const stakingInfo: StakingInfo = await getAvnuStakingInfo({ baseUrl: env.AVNU_BASE_URL });
+        const pool = stakingInfo.delegationPools.find(
+          (p) => p.tokenAddress.toLowerCase() === tokenAddress.toLowerCase()
+        );
+
+        if (!pool) {
+          throw new Error(`No staking pool found for token ${token}`);
+        }
+
+        // Build stake calls using avnu SDK
+        const { calls } = await stakeToCalls(
+          {
+            poolAddress: pool.poolAddress,
+            userAddress: account.address,
+            amount: amountWei,
+          },
+          { baseUrl: env.AVNU_BASE_URL }
+        );
+
+        // Execute via starknet.js
+        const result = await account.execute(calls);
+        await provider.waitForTransaction(result.transaction_hash);
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                success: true,
+                transactionHash: result.transaction_hash,
+                token,
+                amount,
+                poolAddress: pool.poolAddress,
+                message: `Successfully staked ${amount} ${token}. Tokens are now earning rewards.`,
+              }, null, 2),
+            },
+          ],
+        };
+      }
+
+      case "starknet_claim_staking_rewards": {
+        const { token = "STRK", restake = false } = args as {
+          token?: string;
+          restake?: boolean;
+        };
+
+        const tokenAddress = resolveTokenAddress(token);
+
+        // Get pool info
+        const stakingInfo: StakingInfo = await getAvnuStakingInfo({ baseUrl: env.AVNU_BASE_URL });
+        const pool = stakingInfo.delegationPools.find(
+          (p) => p.tokenAddress.toLowerCase() === tokenAddress.toLowerCase()
+        );
+
+        if (!pool) {
+          throw new Error(`No staking pool found for token ${token}`);
+        }
+
+        // Check if there are rewards to claim
+        const userInfo: UserStakingInfo = await getUserStakingInfo(
+          tokenAddress,
+          account.address,
+          { baseUrl: env.AVNU_BASE_URL }
+        );
+
+        if (userInfo.unclaimedRewards === BigInt(0)) {
+          throw new Error("No rewards available to claim");
+        }
+
+        // Build claim calls
+        const { calls } = await claimRewardsToCalls(
+          {
+            poolAddress: pool.poolAddress,
+            userAddress: account.address,
+            restake,
+          },
+          { baseUrl: env.AVNU_BASE_URL }
+        );
+
+        // Execute
+        const result = await account.execute(calls);
+        await provider.waitForTransaction(result.transaction_hash);
+
+        // Get decimals for formatting
+        const contract = new Contract({ abi: ERC20_ABI, address: tokenAddress, providerOrAccount: provider });
+        const decimals = await contract.decimals();
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                success: true,
+                transactionHash: result.transaction_hash,
+                token,
+                rewardsClaimed: formatAmount(userInfo.unclaimedRewards, Number(decimals)),
+                rewardsClaimedUsd: userInfo.unclaimedRewardsInUsd?.toFixed(2),
+                restaked: restake,
+                message: restake
+                  ? `Rewards restaked (compounded) to earn more.`
+                  : `Rewards withdrawn to wallet.`,
+              }, null, 2),
+            },
+          ],
+        };
+      }
+
+      case "starknet_initiate_unstake": {
+        const { token, amount } = args as {
+          token: string;
+          amount: string;
+        };
+
+        const tokenAddress = resolveTokenAddress(token);
+        const amountWei = await parseAmount(amount, tokenAddress);
+
+        // Get pool info
+        const stakingInfo: StakingInfo = await getAvnuStakingInfo({ baseUrl: env.AVNU_BASE_URL });
+        const pool = stakingInfo.delegationPools.find(
+          (p) => p.tokenAddress.toLowerCase() === tokenAddress.toLowerCase()
+        );
+
+        if (!pool) {
+          throw new Error(`No staking pool found for token ${token}`);
+        }
+
+        // Check if there's already an active unbonding
+        const userInfo: UserStakingInfo = await getUserStakingInfo(
+          tokenAddress,
+          account.address,
+          { baseUrl: env.AVNU_BASE_URL }
+        );
+
+        if (userInfo.unpoolAmount > BigInt(0)) {
+          const contract = new Contract({ abi: ERC20_ABI, address: tokenAddress, providerOrAccount: provider });
+          const decimals = await contract.decimals();
+          throw new Error(
+            `Already have an active unstake of ${formatAmount(userInfo.unpoolAmount, Number(decimals))} ${token}. ` +
+            `Only one unstake can be active at a time. Complete the current unstake first.`
+          );
+        }
+
+        // Check user has enough staked
+        if (userInfo.amount < amountWei) {
+          const contract = new Contract({ abi: ERC20_ABI, address: tokenAddress, providerOrAccount: provider });
+          const decimals = await contract.decimals();
+          throw new Error(
+            `Insufficient staked balance. You have ${formatAmount(userInfo.amount, Number(decimals))} ${token} staked.`
+          );
+        }
+
+        // Build initiate unstake calls
+        const { calls } = await initiateUnstakeToCalls(
+          {
+            poolAddress: pool.poolAddress,
+            userAddress: account.address,
+            amount: amountWei,
+          },
+          { baseUrl: env.AVNU_BASE_URL }
+        );
+
+        // Execute
+        const result = await account.execute(calls);
+        await provider.waitForTransaction(result.transaction_hash);
+
+        // Calculate cooldown end date
+        const unbondingDays = getUnbondingDays(tokenAddress);
+        const cooldownEndDate = new Date();
+        cooldownEndDate.setDate(cooldownEndDate.getDate() + unbondingDays);
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                success: true,
+                transactionHash: result.transaction_hash,
+                token,
+                amount,
+                poolAddress: pool.poolAddress,
+                cooldownDays: unbondingDays,
+                cooldownEndsAt: cooldownEndDate.toISOString(),
+                warnings: [
+                  `Tokens will NOT earn rewards during the ${unbondingDays}-day cooldown period.`,
+                  `Use starknet_complete_unstake after ${cooldownEndDate.toDateString()} to claim tokens.`,
+                  `Only one unstake can be active at a time.`,
+                ],
+              }, null, 2),
+            },
+          ],
+        };
+      }
+
+      case "starknet_complete_unstake": {
+        const { token = "STRK" } = args as {
+          token?: string;
+        };
+
+        const tokenAddress = resolveTokenAddress(token);
+
+        // Get pool info
+        const stakingInfo: StakingInfo = await getAvnuStakingInfo({ baseUrl: env.AVNU_BASE_URL });
+        const pool = stakingInfo.delegationPools.find(
+          (p) => p.tokenAddress.toLowerCase() === tokenAddress.toLowerCase()
+        );
+
+        if (!pool) {
+          throw new Error(`No staking pool found for token ${token}`);
+        }
+
+        // Check unbonding status
+        const userInfo: UserStakingInfo = await getUserStakingInfo(
+          tokenAddress,
+          account.address,
+          { baseUrl: env.AVNU_BASE_URL }
+        );
+
+        if (userInfo.unpoolAmount === BigInt(0)) {
+          throw new Error("No active unstake request. Use starknet_initiate_unstake first.");
+        }
+
+        // Check if cooldown is complete
+        if (userInfo.unpoolTime && userInfo.unpoolTime > new Date()) {
+          const timeRemaining = userInfo.unpoolTime.getTime() - Date.now();
+          const daysRemaining = Math.ceil(timeRemaining / (1000 * 60 * 60 * 24));
+          const hoursRemaining = Math.ceil(timeRemaining / (1000 * 60 * 60)) % 24;
+
+          throw new Error(
+            `Cooldown not complete. ${daysRemaining} days and ${hoursRemaining} hours remaining. ` +
+            `Ready to claim on ${userInfo.unpoolTime.toDateString()}.`
+          );
+        }
+
+        // Build unstake calls
+        const { calls } = await unstakeToCalls(
+          {
+            poolAddress: pool.poolAddress,
+            userAddress: account.address,
+          },
+          { baseUrl: env.AVNU_BASE_URL }
+        );
+
+        // Execute
+        const result = await account.execute(calls);
+        await provider.waitForTransaction(result.transaction_hash);
+
+        // Get decimals for formatting
+        const contract = new Contract({ abi: ERC20_ABI, address: tokenAddress, providerOrAccount: provider });
+        const decimals = await contract.decimals();
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                success: true,
+                transactionHash: result.transaction_hash,
+                token,
+                amountClaimed: formatAmount(userInfo.unpoolAmount, Number(decimals)),
+                message: "Unstake complete. Tokens have been returned to your wallet.",
+              }, null, 2),
+            },
+          ],
+        };
+      }
+
+      case "starknet_get_unbonding_status": {
+        const { token = "STRK", userAddress = env.STARKNET_ACCOUNT_ADDRESS } = args as {
+          token?: string;
+          userAddress?: string;
+        };
+
+        const tokenAddress = resolveTokenAddress(token);
+
+        // Get user staking info
+        const userInfo: UserStakingInfo = await getUserStakingInfo(
+          tokenAddress,
+          userAddress,
+          { baseUrl: env.AVNU_BASE_URL }
+        );
+
+        // Get decimals for formatting
+        const contract = new Contract({ abi: ERC20_ABI, address: tokenAddress, providerOrAccount: provider });
+        const decimals = await contract.decimals();
+
+        // Determine status
+        let status: "none" | "cooldown" | "ready";
+        let timeRemaining: string | undefined;
+        let nextAction: string;
+
+        if (userInfo.unpoolAmount === BigInt(0)) {
+          status = "none";
+          nextAction = "No active unstake. Use starknet_initiate_unstake to start.";
+        } else if (userInfo.unpoolTime && userInfo.unpoolTime > new Date()) {
+          status = "cooldown";
+          const remaining = userInfo.unpoolTime.getTime() - Date.now();
+          const days = Math.floor(remaining / (1000 * 60 * 60 * 24));
+          const hours = Math.floor((remaining % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+          const minutes = Math.floor((remaining % (1000 * 60 * 60)) / (1000 * 60));
+          timeRemaining = `${days}d ${hours}h ${minutes}m`;
+          nextAction = `Wait for cooldown to complete on ${userInfo.unpoolTime.toDateString()}.`;
+        } else {
+          status = "ready";
+          nextAction = "Use starknet_complete_unstake to claim your tokens.";
+        }
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                status,
+                token,
+                userAddress,
+                unbondingAmount: formatAmount(userInfo.unpoolAmount, Number(decimals)),
+                unbondingAmountUsd: userInfo.unpoolAmountInUsd?.toFixed(2),
+                cooldownEndsAt: userInfo.unpoolTime?.toISOString(),
+                timeRemaining,
+                nextAction,
+              }, null, 2),
+            },
+          ],
+        };
+      }
+
       default:
         throw new Error(`Unknown tool: ${name}`);
     }
@@ -653,6 +1188,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       userMessage = "Insufficient token balance for this operation.";
     } else if (errorMessage.includes("No quotes available")) {
       userMessage = "No swap routes available for this token pair. The pair may not have liquidity.";
+    } else if (errorMessage.includes("No staking pool found")) {
+      userMessage = errorMessage; // Already user-friendly
+    } else if (errorMessage.includes("No rewards available")) {
+      userMessage = "No staking rewards available to claim. Stake tokens first to earn rewards.";
+    } else if (errorMessage.includes("active unstake")) {
+      userMessage = errorMessage; // Already user-friendly
+    } else if (errorMessage.includes("Cooldown not complete")) {
+      userMessage = errorMessage; // Already user-friendly
+    } else if (errorMessage.includes("Insufficient staked balance")) {
+      userMessage = errorMessage; // Already user-friendly
+    } else if (errorMessage.includes("No active unstake")) {
+      userMessage = errorMessage; // Already user-friendly
     }
 
     return {
