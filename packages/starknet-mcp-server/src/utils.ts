@@ -53,10 +53,10 @@ export const MAX_BATCH_TOKENS = 200;
 export function resolveTokenAddress(token: string): string {
   const upperToken = token.toUpperCase();
   if (upperToken in TOKENS) {
-    return TOKENS[upperToken];
+    return normalizeAddress(TOKENS[upperToken]);
   }
   if (token.startsWith("0x")) {
-    return token;
+    return normalizeAddress(token);
   }
   throw new Error(`Unknown token: ${token}`);
 }

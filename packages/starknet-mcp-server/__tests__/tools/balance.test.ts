@@ -22,9 +22,9 @@ describe("resolveTokenAddress", () => {
     expect(resolveTokenAddress("Strk")).toBe(TOKENS.STRK);
   });
 
-  it("passes through hex addresses unchanged", () => {
+  it("normalizes hex addresses", () => {
     const customToken = "0x123abc456def";
-    expect(resolveTokenAddress(customToken)).toBe(customToken);
+    expect(resolveTokenAddress(customToken)).toBe(normalizeAddress(customToken));
   });
 
   it("throws for unknown token symbols", () => {
@@ -108,7 +108,11 @@ describe("starknet_get_balances (batch)", () => {
     const customAddress = "0x123abc456def";
     const tokens = ["ETH", customAddress, "USDC"];
     const addresses = tokens.map(resolveTokenAddress);
-    expect(addresses).toEqual([TOKENS.ETH, customAddress, TOKENS.USDC]);
+    expect(addresses).toEqual([
+      TOKENS.ETH,
+      normalizeAddress(customAddress),
+      TOKENS.USDC,
+    ]);
   });
 
   it("parses NonZeroBalance response structure", () => {

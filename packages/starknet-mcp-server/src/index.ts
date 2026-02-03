@@ -27,6 +27,7 @@ import {
   ListToolsRequestSchema,
   Tool,
 } from "@modelcontextprotocol/sdk/types.js";
+import { fileURLToPath } from "url";
 import {
   Account,
   RpcProvider,
@@ -423,20 +424,20 @@ async function parseAmount(
 }
 
 // Token balance result type
-type TokenBalanceResult = {
+export type TokenBalanceResult = {
   token: string;
   tokenAddress: string;
   balance: bigint;
   decimals: number;
 };
 
-type BatchBalanceResult = {
+export type BatchBalanceResult = {
   balances: TokenBalanceResult[];
   method: "balance_checker" | "batch_rpc";
 };
 
 // Helper: Fetch single token balance
-async function fetchTokenBalance(
+export async function fetchTokenBalance(
   walletAddress: string,
   tokenAddress: string,
   rpcProvider: RpcProvider = provider
@@ -462,7 +463,7 @@ async function fetchTokenBalance(
 }
 
 // Helper: Fetch multiple token balances via batch RPC
-async function fetchTokenBalancesViaBatchRpc(
+export async function fetchTokenBalancesViaBatchRpc(
   walletAddress: string,
   tokens: string[],
   tokenAddresses: string[]
@@ -482,7 +483,7 @@ async function fetchTokenBalancesViaBatchRpc(
 }
 
 // Helper: Fetch multiple token balances via BalanceChecker contract
-async function fetchTokenBalancesViaBalanceChecker(
+export async function fetchTokenBalancesViaBalanceChecker(
   walletAddress: string,
   tokens: string[],
   tokenAddresses: string[]
@@ -524,7 +525,7 @@ async function fetchTokenBalancesViaBalanceChecker(
 }
 
 // Helper: Fetch multiple token balances (tries BalanceChecker, falls back to batch RPC)
-async function fetchTokenBalances(
+export async function fetchTokenBalances(
   walletAddress: string,
   tokens: string[],
   tokenAddresses: string[]
@@ -532,10 +533,60 @@ async function fetchTokenBalances(
   try {
     const balances = await fetchTokenBalancesViaBalanceChecker(walletAddress, tokens, tokenAddresses);
     return { balances, method: "balance_checker" };
-  } catch {
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.warn(`BalanceChecker failed, falling back to batch RPC: ${errorMessage}`);
     const balances = await fetchTokenBalancesViaBatchRpc(walletAddress, tokens, tokenAddresses);
     return { balances, method: "batch_rpc" };
   }
+}
+
+export async function getBalancesResult(args: {
+  address?: string;
+  tokens: string[];
+}): Promise<{
+  address: string;
+  balances: {
+    token: string;
+    tokenAddress: string;
+    balance: string;
+    raw: string;
+    decimals: number;
+  }[];
+  tokensQueried: number;
+  method: BatchBalanceResult["method"];
+}> {
+  const { address = env.STARKNET_ACCOUNT_ADDRESS, tokens } = args;
+
+  if (!Array.isArray(tokens) || tokens.length === 0) {
+    throw new Error("At least one token is required");
+  }
+
+  if (tokens.length > MAX_BATCH_TOKENS) {
+    throw new Error(`Maximum ${MAX_BATCH_TOKENS} tokens per request`);
+  }
+
+  for (const token of tokens) {
+    if (typeof token !== "string" || token.trim().length === 0) {
+      throw new Error("Token symbols or addresses must be non-empty strings");
+    }
+  }
+
+  const tokenAddresses = tokens.map((token) => resolveTokenAddress(token));
+  const { balances, method } = await fetchTokenBalances(address, tokens, tokenAddresses);
+
+  return {
+    address,
+    balances: balances.map((b) => ({
+      token: b.token,
+      tokenAddress: b.tokenAddress,
+      balance: formatAmount(b.balance, b.decimals),
+      raw: b.balance.toString(),
+      decimals: b.decimals,
+    })),
+    tokensQueried: tokens.length,
+    method,
+  };
 }
 
 // Tool handlers
@@ -580,33 +631,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           tokens: string[];
         };
 
-        if (!tokens || tokens.length === 0) {
-          throw new Error("At least one token is required");
-        }
-
-        if (tokens.length > MAX_BATCH_TOKENS) {
-          throw new Error(`Maximum ${MAX_BATCH_TOKENS} tokens per request`);
-        }
-
-        const tokenAddresses = tokens.map(resolveTokenAddress);
-        const { balances, method } = await fetchTokenBalances(address, tokens, tokenAddresses);
+        const result = await getBalancesResult({ address, tokens });
 
         return {
           content: [
             {
               type: "text",
-              text: JSON.stringify({
-                address,
-                balances: balances.map((b) => ({
-                  token: b.token,
-                  tokenAddress: b.tokenAddress,
-                  balance: formatAmount(b.balance, b.decimals),
-                  raw: b.balance.toString(),
-                  decimals: b.decimals,
-                })),
-                tokensQueried: tokens.length,
-                method,
-              }, null, 2),
+              text: JSON.stringify(result, null, 2),
             },
           ],
         };
@@ -883,7 +914,10 @@ async function main() {
   console.error("Starknet MCP Server running on stdio");
 }
 
-main().catch((error) => {
-  console.error("Server error:", error);
-  process.exit(1);
-});
+const isMain = process.argv[1] === fileURLToPath(import.meta.url);
+if (isMain) {
+  main().catch((error) => {
+    console.error("Server error:", error);
+    process.exit(1);
+  });
+}

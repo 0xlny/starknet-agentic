@@ -45,6 +45,38 @@ STARKNET_PRIVATE_KEY=0x...
 
 ## Core Operations
 
+### MCP Balance Tools
+
+Use MCP tools when interacting through the Starknet MCP server (not raw starknet.js).
+
+`starknet_get_balance` is best for single-token queries (simpler and lighter):
+
+```json
+{
+  "tool": "starknet_get_balance",
+  "arguments": {
+    "token": "ETH",
+    "address": "0x..." // optional
+  }
+}
+```
+
+`starknet_get_balances` is best for multi-token queries in one call:
+
+```json
+{
+  "tool": "starknet_get_balances",
+  "arguments": {
+    "tokens": ["ETH", "STRK", "USDC"],
+    "address": "0x..." // optional
+  }
+}
+```
+
+Batch responses include a `method` field to indicate which backend was used:
+- `balance_checker` for the on-chain BalanceChecker contract
+- `batch_rpc` for RPC batch fallback
+
 ### Check Balance
 
 ```typescript
