@@ -6,6 +6,7 @@ import {
   resolveTokenAddress,
   normalizeAddress,
   getCachedDecimals,
+  validateTokensInput,
 } from "../../src/utils.js";
 import { formatAmount } from "../../src/utils/formatter.js";
 
@@ -201,22 +202,6 @@ describe("starknet_get_balances (batch)", () => {
 });
 
 describe("starknet_get_balances validation", () => {
-  // Helper to simulate the validation logic from index.ts
-  function validateTokensInput(tokens: string[] | undefined) {
-    if (!tokens || tokens.length === 0) {
-      throw new Error("At least one token is required");
-    }
-    if (tokens.length > MAX_BATCH_TOKENS) {
-      throw new Error(`Maximum ${MAX_BATCH_TOKENS} tokens per request`);
-    }
-    const tokenAddresses = tokens.map(resolveTokenAddress);
-    const normalizedSet = new Set(tokenAddresses.map(normalizeAddress));
-    if (normalizedSet.size !== tokens.length) {
-      throw new Error("Duplicate tokens in request");
-    }
-    return tokenAddresses;
-  }
-
   it("throws for empty token array", () => {
     expect(() => validateTokensInput([])).toThrow("At least one token is required");
   });

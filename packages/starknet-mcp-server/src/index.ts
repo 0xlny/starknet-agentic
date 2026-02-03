@@ -43,6 +43,7 @@ import {
   resolveTokenAddress,
   normalizeAddress,
   getCachedDecimals,
+  validateTokensInput,
 } from "./utils.js";
 import {
   getQuotes,
@@ -584,20 +585,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           tokens: string[];
         };
 
-        if (!tokens || tokens.length === 0) {
-          throw new Error("At least one token is required");
-        }
-
-        if (tokens.length > MAX_BATCH_TOKENS) {
-          throw new Error(`Maximum ${MAX_BATCH_TOKENS} tokens per request`);
-        }
-
-        const tokenAddresses = tokens.map(resolveTokenAddress);
-        const normalizedSet = new Set(tokenAddresses.map(normalizeAddress));
-        if (normalizedSet.size !== tokens.length) {
-          throw new Error("Duplicate tokens in request");
-        }
-
+        const tokenAddresses = validateTokensInput(tokens);
         const { balances, method } = await fetchTokenBalances(address, tokens, tokenAddresses);
 
         return {
