@@ -528,15 +528,23 @@ export async function fetchTokenBalancesViaBalanceChecker(
 export async function fetchTokenBalances(
   walletAddress: string,
   tokens: string[],
-  tokenAddresses: string[]
+  tokenAddresses: string[],
+  deps: {
+    balanceChecker?: typeof fetchTokenBalancesViaBalanceChecker;
+    batchRpc?: typeof fetchTokenBalancesViaBatchRpc;
+  } = {}
 ): Promise<BatchBalanceResult> {
+  const balanceChecker =
+    deps.balanceChecker ?? fetchTokenBalancesViaBalanceChecker;
+  const batchRpc = deps.batchRpc ?? fetchTokenBalancesViaBatchRpc;
+
   try {
-    const balances = await fetchTokenBalancesViaBalanceChecker(walletAddress, tokens, tokenAddresses);
+    const balances = await balanceChecker(walletAddress, tokens, tokenAddresses);
     return { balances, method: "balance_checker" };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     console.warn(`BalanceChecker failed, falling back to batch RPC: ${errorMessage}`);
-    const balances = await fetchTokenBalancesViaBatchRpc(walletAddress, tokens, tokenAddresses);
+    const balances = await batchRpc(walletAddress, tokens, tokenAddresses);
     return { balances, method: "batch_rpc" };
   }
 }
@@ -544,6 +552,7 @@ export async function fetchTokenBalances(
 export async function getBalancesResult(args: {
   address?: string;
   tokens: string[];
+  fetcher?: typeof fetchTokenBalances;
 }): Promise<{
   address: string;
   balances: {
@@ -556,7 +565,7 @@ export async function getBalancesResult(args: {
   tokensQueried: number;
   method: BatchBalanceResult["method"];
 }> {
-  const { address = env.STARKNET_ACCOUNT_ADDRESS, tokens } = args;
+  const { address = env.STARKNET_ACCOUNT_ADDRESS, tokens, fetcher } = args;
 
   if (!Array.isArray(tokens) || tokens.length === 0) {
     throw new Error("At least one token is required");
@@ -573,7 +582,11 @@ export async function getBalancesResult(args: {
   }
 
   const tokenAddresses = tokens.map((token) => resolveTokenAddress(token));
-  const { balances, method } = await fetchTokenBalances(address, tokens, tokenAddresses);
+  const { balances, method } = await (fetcher ?? fetchTokenBalances)(
+    address,
+    tokens,
+    tokenAddresses
+  );
 
   return {
     address,

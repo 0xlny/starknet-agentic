@@ -31,14 +31,13 @@ describe("starknet_get_balances integration", () => {
       },
     ];
 
-    vi.spyOn(moduleUnderTest, "fetchTokenBalances").mockResolvedValue({
-      balances,
-      method: "balance_checker",
-    });
-
     const result = await moduleUnderTest.getBalancesResult({
       address: "0x123",
       tokens: ["ETH", "USDC"],
+      fetcher: async () => ({
+        balances,
+        method: "balance_checker",
+      }),
     });
 
     expect(result).toEqual({
@@ -74,8 +73,10 @@ describe("starknet_get_balances integration", () => {
   });
 
   it("preserves duplicate tokens and order", async () => {
-    vi.spyOn(moduleUnderTest, "fetchTokenBalances").mockImplementation(
-      async (_address, tokens, tokenAddresses) => {
+    const result = await moduleUnderTest.getBalancesResult({
+      address: "0x123",
+      tokens: ["ETH", "ETH"],
+      fetcher: async (_address, tokens, tokenAddresses) => {
         expect(tokens).toEqual(["ETH", "ETH"]);
         expect(tokenAddresses).toEqual([TOKENS.ETH, TOKENS.ETH]);
         return {
@@ -95,12 +96,7 @@ describe("starknet_get_balances integration", () => {
           ],
           method: "batch_rpc",
         };
-      }
-    );
-
-    const result = await moduleUnderTest.getBalancesResult({
-      address: "0x123",
-      tokens: ["ETH", "ETH"],
+      },
     });
 
     expect(result.balances).toHaveLength(2);
@@ -112,8 +108,10 @@ describe("starknet_get_balances integration", () => {
     const customAddress = "0x123abc456def";
     const normalized = normalizeAddress(customAddress);
 
-    vi.spyOn(moduleUnderTest, "fetchTokenBalances").mockImplementation(
-      async (_address, tokens, tokenAddresses) => {
+    const result = await moduleUnderTest.getBalancesResult({
+      address: "0x123",
+      tokens: ["ETH", customAddress],
+      fetcher: async (_address, tokens, tokenAddresses) => {
         expect(tokens).toEqual(["ETH", customAddress]);
         expect(tokenAddresses).toEqual([TOKENS.ETH, normalized]);
         return {
@@ -133,12 +131,7 @@ describe("starknet_get_balances integration", () => {
           ],
           method: "batch_rpc",
         };
-      }
-    );
-
-    const result = await moduleUnderTest.getBalancesResult({
-      address: "0x123",
-      tokens: ["ETH", customAddress],
+      },
     });
 
     expect(result.balances[1].tokenAddress).toBe(normalized);
@@ -157,22 +150,23 @@ describe("starknet_get_balances integration", () => {
 describe("fetchTokenBalances fallback", () => {
   it("falls back to batch RPC when BalanceChecker fails", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    vi.spyOn(moduleUnderTest, "fetchTokenBalancesViaBalanceChecker").mockRejectedValue(
-      new Error("balance checker down")
-    );
-    vi.spyOn(moduleUnderTest, "fetchTokenBalancesViaBatchRpc").mockResolvedValue([
-      {
-        token: "ETH",
-        tokenAddress: TOKENS.ETH,
-        balance: 0n,
-        decimals: 18,
-      },
-    ]);
-
     const result = await moduleUnderTest.fetchTokenBalances(
       "0x123",
       ["ETH"],
-      [TOKENS.ETH]
+      [TOKENS.ETH],
+      {
+        balanceChecker: async () => {
+          throw new Error("balance checker down");
+        },
+        batchRpc: async () => [
+          {
+            token: "ETH",
+            tokenAddress: TOKENS.ETH,
+            balance: 0n,
+            decimals: 18,
+          },
+        ],
+      }
     );
 
     expect(result.method).toBe("batch_rpc");
