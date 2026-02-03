@@ -532,7 +532,11 @@ async function fetchTokenBalances(
   try {
     const balances = await fetchTokenBalancesViaBalanceChecker(walletAddress, tokens, tokenAddresses);
     return { balances, method: "balance_checker" };
-  } catch {
+  } catch (error) {
+    console.error(
+      "BalanceChecker contract unavailable, falling back to batch RPC:",
+      error instanceof Error ? error.message : error
+    );
     const balances = await fetchTokenBalancesViaBatchRpc(walletAddress, tokens, tokenAddresses);
     return { balances, method: "batch_rpc" };
   }
@@ -589,6 +593,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         const tokenAddresses = tokens.map(resolveTokenAddress);
+        const normalizedSet = new Set(tokenAddresses.map(normalizeAddress));
+        if (normalizedSet.size !== tokens.length) {
+          throw new Error("Duplicate tokens in request");
+        }
+
         const { balances, method } = await fetchTokenBalances(address, tokens, tokenAddresses);
 
         return {

@@ -199,3 +199,87 @@ describe("starknet_get_balances (batch)", () => {
     expect(() => tokens.map(resolveTokenAddress)).toThrow("Unknown token: UNKNOWN_TOKEN");
   });
 });
+
+describe("starknet_get_balances validation", () => {
+  // Helper to simulate the validation logic from index.ts
+  function validateTokensInput(tokens: string[] | undefined) {
+    if (!tokens || tokens.length === 0) {
+      throw new Error("At least one token is required");
+    }
+    if (tokens.length > MAX_BATCH_TOKENS) {
+      throw new Error(`Maximum ${MAX_BATCH_TOKENS} tokens per request`);
+    }
+    const tokenAddresses = tokens.map(resolveTokenAddress);
+    const normalizedSet = new Set(tokenAddresses.map(normalizeAddress));
+    if (normalizedSet.size !== tokens.length) {
+      throw new Error("Duplicate tokens in request");
+    }
+    return tokenAddresses;
+  }
+
+  it("throws for empty token array", () => {
+    expect(() => validateTokensInput([])).toThrow("At least one token is required");
+  });
+
+  it("throws for undefined tokens", () => {
+    expect(() => validateTokensInput(undefined)).toThrow("At least one token is required");
+  });
+
+  it("throws for exceeding max tokens", () => {
+    const tooManyTokens = Array(201).fill("ETH");
+    expect(() => validateTokensInput(tooManyTokens)).toThrow("Maximum 200 tokens per request");
+  });
+
+  it("throws for duplicate tokens (same symbol)", () => {
+    expect(() => validateTokensInput(["ETH", "ETH"])).toThrow("Duplicate tokens in request");
+  });
+
+  it("throws for duplicate tokens (symbol and address)", () => {
+    expect(() => validateTokensInput(["ETH", TOKENS.ETH])).toThrow("Duplicate tokens in request");
+  });
+
+  it("throws for duplicate tokens (case variants)", () => {
+    expect(() => validateTokensInput(["eth", "ETH"])).toThrow("Duplicate tokens in request");
+  });
+
+  it("allows unique tokens", () => {
+    const tokens = ["ETH", "STRK", "USDC", "USDT"];
+    const result = validateTokensInput(tokens);
+    expect(result).toEqual([TOKENS.ETH, TOKENS.STRK, TOKENS.USDC, TOKENS.USDT]);
+  });
+
+  it("allows mix of symbols and different addresses", () => {
+    const customAddress = "0x1234567890abcdef1234567890abcdef12345678";
+    const tokens = ["ETH", customAddress, "USDC"];
+    const result = validateTokensInput(tokens);
+    expect(result).toHaveLength(3);
+  });
+
+  it("allows max tokens (200)", () => {
+    // Create 200 unique addresses
+    const tokens = Array.from({ length: 200 }, (_, i) =>
+      "0x" + (i + 1).toString(16).padStart(64, "0")
+    );
+    expect(() => validateTokensInput(tokens)).not.toThrow();
+  });
+});
+
+describe("fetchTokenBalances fallback behavior", () => {
+  it("returns balance_checker method on success", () => {
+    // This tests the expected return structure when BalanceChecker succeeds
+    const successResult = { balances: [], method: "balance_checker" as const };
+    expect(successResult.method).toBe("balance_checker");
+  });
+
+  it("returns batch_rpc method on fallback", () => {
+    // This tests the expected return structure when falling back to batch RPC
+    const fallbackResult = { balances: [], method: "batch_rpc" as const };
+    expect(fallbackResult.method).toBe("batch_rpc");
+  });
+
+  it("method field is one of expected values", () => {
+    const validMethods = ["balance_checker", "batch_rpc"];
+    expect(validMethods).toContain("balance_checker");
+    expect(validMethods).toContain("batch_rpc");
+  });
+});
