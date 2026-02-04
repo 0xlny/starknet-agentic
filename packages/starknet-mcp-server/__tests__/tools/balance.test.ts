@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { uint256 } from "starknet";
 import {
-  TOKENS,
   MAX_BATCH_TOKENS,
   resolveTokenAddress,
   normalizeAddress,
@@ -9,6 +8,7 @@ import {
   validateTokensInput,
 } from "../../src/utils.js";
 import { formatAmount } from "../../src/utils/formatter.js";
+import { TOKENS } from "../../src/services/index.js";
 
 describe("formatAmount", () => {
   it("formats standard ETH amounts (18 decimals)", () => {
@@ -65,9 +65,12 @@ describe("resolveTokenAddress", () => {
     expect(resolveTokenAddress("Strk")).toBe(TOKENS.STRK);
   });
 
-  it("passes through hex addresses unchanged", () => {
+  it("normalizes hex addresses to 64 chars", () => {
     const customToken = "0x123abc456def";
-    expect(resolveTokenAddress(customToken)).toBe(customToken);
+    const result = resolveTokenAddress(customToken);
+    // TokenService normalizes all addresses to 0x + 64 hex chars
+    expect(result).toBe("0x0000000000000000000000000000000000000000000000000000123abc456def");
+    expect(result.length).toBe(66);
   });
 
   it("throws for unknown token symbols", () => {
@@ -147,11 +150,12 @@ describe("starknet_get_balances (batch)", () => {
     expect(addresses).toEqual([TOKENS.ETH, TOKENS.STRK, TOKENS.USDC, TOKENS.USDT]);
   });
 
-  it("handles mixed symbols and addresses", () => {
+  it("handles mixed symbols and addresses (normalized)", () => {
     const customAddress = "0x123abc456def";
+    const normalizedCustomAddress = "0x0000000000000000000000000000000000000000000000000000123abc456def";
     const tokens = ["ETH", customAddress, "USDC"];
     const addresses = tokens.map(resolveTokenAddress);
-    expect(addresses).toEqual([TOKENS.ETH, customAddress, TOKENS.USDC]);
+    expect(addresses).toEqual([TOKENS.ETH, normalizedCustomAddress, TOKENS.USDC]);
   });
 
   it("parses NonZeroBalance response structure", () => {

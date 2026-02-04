@@ -30,7 +30,6 @@ import {
 import {
   Account,
   RpcProvider,
-  Contract,
   CallData,
   cairo,
   ETransactionVersion,
@@ -38,14 +37,13 @@ import {
   type PaymasterDetails,
 } from "starknet";
 import {
-  TOKENS,
   resolveTokenAddress,
   validateTokensInput,
 } from "./utils.js";
+import { getTokenService, configureTokenServiceProvider, TOKENS } from "./services/index.js";
 import {
   fetchTokenBalance,
   fetchTokenBalances,
-  ERC20_ABI,
 } from "./helpers/balance.js";
 import {
   getQuotes,
@@ -85,6 +83,10 @@ const account = new Account({
 
 // Fee mode: sponsored (gasfree, dApp pays) vs default (user pays in gasToken)
 const isSponsored = !!env.AVNU_PAYMASTER_API_KEY;
+
+// Initialize TokenService with avnu base URL and RPC provider for on-chain fallback
+getTokenService(env.AVNU_BASE_URL);
+configureTokenServiceProvider(provider);
 
 /**
  * Execute transaction with optional gasfree mode.
@@ -345,19 +347,17 @@ const tools: Tool[] = [
 ];
 
 
-// Helper: Parse amount with decimals
 async function parseAmount(
   amount: string,
   tokenAddress: string
 ): Promise<bigint> {
-  const contract = new Contract({ abi: ERC20_ABI, address: tokenAddress, providerOrAccount: provider });
-  const decimalsResult = await contract.decimals();
-  const decimalsBigInt = BigInt(decimalsResult?.decimals ?? decimalsResult);
+  const tokenService = getTokenService();
+  const decimals = await tokenService.getDecimalsAsync(tokenAddress);
 
   // Handle decimal amounts
   const [whole, fraction = ""] = amount.split(".");
-  const paddedFraction = fraction.padEnd(Number(decimalsBigInt), "0");
-  const amountStr = whole + paddedFraction.slice(0, Number(decimalsBigInt));
+  const paddedFraction = fraction.padEnd(decimals, "0");
+  const amountStr = whole + paddedFraction.slice(0, decimals);
 
   return BigInt(amountStr);
 }
@@ -567,8 +567,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const transactionHash = await executeTransaction(calls, gasfree, gasTokenAddress);
         await provider.waitForTransaction(transactionHash);
 
-        const buyTokenContract = new Contract({ abi: ERC20_ABI, address: buyTokenAddress, providerOrAccount: provider });
-        const buyDecimals = Number(await buyTokenContract.decimals());
+        const tokenService = getTokenService();
+        const buyDecimals = await tokenService.getDecimalsAsync(buyTokenAddress);
         const quoteFields = formatQuoteFields(bestQuote, buyDecimals);
 
         return {
@@ -616,8 +616,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         const bestQuote = quotes[0];
 
-        const buyTokenContract = new Contract({ abi: ERC20_ABI, address: buyTokenAddress, providerOrAccount: provider });
-        const buyDecimals = Number(await buyTokenContract.decimals());
+        const tokenService = getTokenService();
+        const buyDecimals = await tokenService.getDecimalsAsync(buyTokenAddress);
         const quoteFields = formatQuoteFields(bestQuote, buyDecimals);
 
         return {

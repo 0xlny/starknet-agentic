@@ -3,29 +3,7 @@
  */
 
 import { validateAndParseAddress } from "starknet";
-
-/**
- * Well-known token addresses on Starknet Mainnet.
- * Used for symbol-to-address resolution in MCP tools.
- */
-export const TOKENS: Record<string, string> = {
-  ETH: "0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7",
-  STRK: "0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d",
-  USDC: "0x053c91253bc9682c04929ca02ed00b3e423f6710d2ee7e0d5ebb06f3ecf368a8",
-  USDT: "0x068f5c6a61780768455de69077e07e89787839bf8166decfbf92b645209c0fb8",
-};
-
-/**
- * Cached decimal values for common tokens.
- * Avoids on-chain queries for frequently used tokens.
- * Unknown tokens should fetch decimals from contract.
- */
-export const TOKEN_DECIMALS: Record<string, number> = {
-  [TOKENS.ETH]: 18,
-  [TOKENS.STRK]: 18,
-  [TOKENS.USDC]: 6,
-  [TOKENS.USDT]: 6,
-};
+import { getTokenService } from "./services/index.js";
 
 /**
  * Maximum number of tokens that can be queried in a single batch balance request.
@@ -38,6 +16,8 @@ export const MAX_BATCH_TOKENS = 200;
  * Accepts well-known symbols (ETH, STRK, USDC, USDT) case-insensitively,
  * or any hex address string.
  *
+ * Delegates to TokenService internally.
+ *
  * @param token - Token symbol (case-insensitive) or contract address (0x...)
  * @returns Normalized contract address
  * @throws Error if token symbol is unknown and not a valid hex address
@@ -46,19 +26,24 @@ export const MAX_BATCH_TOKENS = 200;
  * ```typescript
  * resolveTokenAddress("ETH")    // → "0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7"
  * resolveTokenAddress("eth")    // → "0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7"
- * resolveTokenAddress("0x123")  // → "0x123" (passthrough)
+ * resolveTokenAddress("0x123")  // → "0x0...0123" (normalized)
  * resolveTokenAddress("UNKNOWN") // → throws Error
  * ```
  */
 export function resolveTokenAddress(token: string): string {
-  const upperToken = token.toUpperCase();
-  if (upperToken in TOKENS) {
-    return TOKENS[upperToken];
-  }
-  if (token.startsWith("0x")) {
-    return token;
-  }
-  throw new Error(`Unknown token: ${token}`);
+  return getTokenService().resolveSymbol(token);
+}
+
+/**
+ * Resolve token symbol to contract address asynchronously.
+ * For unknown symbols, fetches from avnu SDK.
+ *
+ * @param token - Token symbol (case-insensitive) or contract address (0x...)
+ * @returns Normalized contract address
+ * @throws Error if token cannot be resolved
+ */
+export async function resolveTokenAddressAsync(token: string): Promise<string> {
+  return getTokenService().resolveSymbolAsync(token);
 }
 
 /**
@@ -81,8 +66,9 @@ export function normalizeAddress(address: string): string {
 
 /**
  * Get cached decimal value for a known token address.
- * Returns undefined for unknown tokens - caller should fetch from contract.
- * Checks both the original and normalized address for maximum compatibility.
+ * Returns undefined for unknown tokens - caller should use getDecimalsAsync.
+ *
+ * Delegates to TokenService internally.
  *
  * @param tokenAddress - Token contract address
  * @returns Token decimals (e.g., 18 for ETH) or undefined if not cached
@@ -95,9 +81,18 @@ export function normalizeAddress(address: string): string {
  * ```
  */
 export function getCachedDecimals(tokenAddress: string): number | undefined {
-  const normalized = normalizeAddress(tokenAddress);
-  // Check both normalized and original address
-  return TOKEN_DECIMALS[tokenAddress] ?? TOKEN_DECIMALS[normalized];
+  return getTokenService().getDecimals(tokenAddress);
+}
+
+/**
+ * Get decimals for a token address asynchronously.
+ * For unknown tokens, fetches from avnu SDK.
+ *
+ * @param tokenAddress - Token contract address
+ * @returns Token decimals
+ */
+export async function getDecimalsAsync(tokenAddress: string): Promise<number> {
+  return getTokenService().getDecimalsAsync(tokenAddress);
 }
 
 /**
@@ -123,8 +118,8 @@ export function validateTokensInput(tokens: string[] | undefined): string[] {
     throw new Error(`Maximum ${MAX_BATCH_TOKENS} tokens per request`);
   }
   const tokenAddresses = tokens.map(resolveTokenAddress);
-  const normalizedSet = new Set(tokenAddresses.map(normalizeAddress));
-  if (normalizedSet.size !== tokens.length) {
+  // resolveTokenAddress already returns normalized addresses, so we can check directly
+  if (new Set(tokenAddresses).size !== tokens.length) {
     throw new Error("Duplicate tokens in request");
   }
   return tokenAddresses;
